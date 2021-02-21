@@ -21,6 +21,7 @@
 
 
 #include <stdio.h>
+#include <omp.h>
 
 #define __STDC_CONSTANT_MACROS
 
@@ -134,35 +135,48 @@ int main(int argc, char* argv[])
 		return -1;
 	}
 
+    //TODO: Use OMP to implement multithreading of encoding
 	y_size = pCodecCtx->width * pCodecCtx->height;
     //Encode
+    #pragma omp parallel for
     for (i = 0; i < framenum; i++) {
         av_init_packet(&pkt);
         pkt.data = NULL;    // packet data will be allocated by the encoder
         pkt.size = 0;
-		//Read raw YUV data
+		//Read raw YUV data from fp_in into pFrame->data
 		if (fread(pFrame->data[0],1,y_size,fp_in)<= 0||		// Y
 			fread(pFrame->data[1],1,y_size/4,fp_in)<= 0||	// U
 			fread(pFrame->data[2],1,y_size/4,fp_in)<= 0){	// V
 			return -1;
-		}else if(feof(fp_in)){
+		} else if(feof(fp_in)){
 			break;
 		}
-
-        pFrame->pts = i;
+        
+        pFrame->pts = i;    // set the timestamp for the frame
         /* encode the image */
+        // encode pFrame and write the output to pkt
+        /* Accoring to avcodec, "The output packet does not necessarily need to contain data for 
+        * the most recent frame, as encoders can delay and reorder input frames internally as needed.
+        * So I think that as long as we set pframe->pts correctly above, we should be good to go for this
+        * sources: 
+        *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavcodec/avcodec.h
+        *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavutil/frame.h
+        */
         ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
         if (ret < 0) {
             printf("Error encoding frame\n");
             return -1;
         }
         if (got_output) {
-            printf("Succeed to encode frame: %5d\tsize:%5d\n",framecnt,pkt.size);
+            // Question: why framecnt and not just i?
+            //printf("Succeed to encode frame: %5d\tsize:%5d\n",framecnt,pkt.size);
 			framecnt++;
+            printf("Succeed to encode frame: %5d\tsize:%5d\n", i, pkt.size);
             fwrite(pkt.data, 1, pkt.size, fp_out);
             av_free_packet(&pkt);
         }
     }
+
     //Flush Encoder
     for (got_output = 1; got_output; i++) {
         ret = avcodec_encode_video2(pCodecCtx, &pkt, NULL, &got_output);
