@@ -52,6 +52,14 @@ extern "C"
 #define TEST_HEVC  0
 
 
+void thread_write(omp_lock_t* write_lock, const void *data, size_t size, size_t nitems, FILE *fp_out)
+{
+   omp_set_lock(write_lock);
+   fwrite(data, nitems, size, fp_out);
+   omp_unset_lock(write_lock);
+}
+
+
 int main(int argc, char* argv[])
 {
 	AVCodec *pCodec;
@@ -63,6 +71,12 @@ int main(int argc, char* argv[])
     AVPacket pkt;
 	int y_size;
 	int framecnt=0;
+
+   //OpenMP I/O locks
+   omp_lock_t read_lock;
+   omp_lock_t write_lock;
+   omp_init_lock(&read_lock);
+   omp_init_lock(&write_lock);
 
 	char filename_in[]="../ds_480x272.yuv";
 
@@ -107,6 +121,9 @@ int main(int argc, char* argv[])
         return -1;
     }
     
+    ////////////////////////////////////
+    //This init won't be used 
+    //init will be taken care of on each thread later
     pFrame = av_frame_alloc();
     if (!pFrame) {
         printf("Could not allocate video frame\n");
@@ -122,6 +139,8 @@ int main(int argc, char* argv[])
         printf("Could not allocate raw picture buffer\n");
         return -1;
     }
+   //////////////////////////////////
+
 	//Input raw data
 	fp_in = fopen(filename_in, "rb");
 	if (!fp_in) {
@@ -137,20 +156,50 @@ int main(int argc, char* argv[])
 
     //TODO: Use OMP to implement multithreading of encoding
 	y_size = pCodecCtx->width * pCodecCtx->height;
+   
+   //enums for holding status information
+   enum ExitFlag {RETURN, BREAK, NONE};
+   enum InitFlag {INIT, INIT_DONE};
+   ExitFlag exit_flag = NONE;
+   InitFlag init_flag = INIT;
     //Encode
-    #pragma omp parallel for
-    for (i = 0; i < framenum; i++) {
+    #pragma omp parallel for private(ret, got_output, pkt, pFrame) firstprivate(init_flag)
+    for (i = 0; exit_flag != NONE && i < framenum; i++) {
+       if (init_flag == INIT) {
+          pFrame = av_frame_alloc();
+          if (!pFrame) {
+              printf("Could not allocate video frame\n");
+              //return -1;
+              exit_flag = RETURN;
+          }
+          pFrame->format = pCodecCtx->pix_fmt;
+          pFrame->width  = pCodecCtx->width;
+          pFrame->height = pCodecCtx->height;
+
+          ret = av_image_alloc(pFrame->data, pFrame->linesize, pCodecCtx->width, pCodecCtx->height,
+                               pCodecCtx->pix_fmt, 16);
+          if (ret < 0) {
+              printf("Could not allocate raw picture buffer\n");
+              //return -1;
+              exit_flag = RETURN;
+          }
+       }
         av_init_packet(&pkt);
         pkt.data = NULL;    // packet data will be allocated by the encoder
         pkt.size = 0;
+
 		//Read raw YUV data from fp_in into pFrame->data
+      omp_set_lock(&read_lock);
 		if (fread(pFrame->data[0],1,y_size,fp_in)<= 0||		// Y
 			fread(pFrame->data[1],1,y_size/4,fp_in)<= 0||	// U
 			fread(pFrame->data[2],1,y_size/4,fp_in)<= 0){	// V
-			return -1;
+			//return -1;
+         exit_flag = RETURN;
 		} else if(feof(fp_in)){
-			break;
+			//break;
+         exit_flag = BREAK;
 		}
+      omp_unset_lock(&read_lock);
         
         pFrame->pts = i;    // set the timestamp for the frame
         /* encode the image */
@@ -162,12 +211,15 @@ int main(int argc, char* argv[])
         *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavcodec/avcodec.h
         *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavutil/frame.h
         */
-        ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
-        if (ret < 0) {
-            printf("Error encoding frame\n");
-            return -1;
+        if (exit_flag == NONE) {
+           ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
         }
-        if (got_output) {
+        if (exit_flag == NONE && ret < 0) {
+            printf("Error encoding frame\n");
+            //return -1;
+            exit_flag = BREAK;
+        }
+        if (exit_flag == NONE && got_output) {
             // Question: why framecnt and not just i?
             //printf("Succeed to encode frame: %5d\tsize:%5d\n",framecnt,pkt.size);
 			framecnt++;
