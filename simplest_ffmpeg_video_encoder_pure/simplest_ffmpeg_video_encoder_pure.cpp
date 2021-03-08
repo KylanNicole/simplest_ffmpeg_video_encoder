@@ -124,7 +124,7 @@ int main(int argc, char* argv[])
     ////////////////////////////////////
     //This init won't be used 
     //init will be taken care of on each thread later
-    pFrame = av_frame_alloc();
+    /*pFrame = av_frame_alloc();
     if (!pFrame) {
         printf("Could not allocate video frame\n");
         return -1;
@@ -138,7 +138,7 @@ int main(int argc, char* argv[])
     if (ret < 0) {
         printf("Could not allocate raw picture buffer\n");
         return -1;
-    }
+    }*/
    //////////////////////////////////
 
 	//Input raw data
@@ -154,7 +154,6 @@ int main(int argc, char* argv[])
 		return -1;
 	}
 
-    //TODO: Use OMP to implement multithreading of encoding
 	y_size = pCodecCtx->width * pCodecCtx->height;
    
    //enums for holding status information
@@ -164,73 +163,81 @@ int main(int argc, char* argv[])
    InitFlag init_flag = INIT;
     //Encode
     #pragma omp parallel for private(ret, got_output, pkt, pFrame) firstprivate(init_flag)
-    for (i = 0; exit_flag != NONE && i < framenum; i++) {
-       if (init_flag == INIT) {
-          pFrame = av_frame_alloc();
-          if (!pFrame) {
-              printf("Could not allocate video frame\n");
-              //return -1;
-              exit_flag = RETURN;
-          }
-          pFrame->format = pCodecCtx->pix_fmt;
-          pFrame->width  = pCodecCtx->width;
-          pFrame->height = pCodecCtx->height;
-
-          ret = av_image_alloc(pFrame->data, pFrame->linesize, pCodecCtx->width, pCodecCtx->height,
-                               pCodecCtx->pix_fmt, 16);
-          if (ret < 0) {
-              printf("Could not allocate raw picture buffer\n");
-              //return -1;
-              exit_flag = RETURN;
-          }
-       }
-        av_init_packet(&pkt);
-        pkt.data = NULL;    // packet data will be allocated by the encoder
-        pkt.size = 0;
-
-		//Read raw YUV data from fp_in into pFrame->data
-      omp_set_lock(&read_lock);
-		if (fread(pFrame->data[0],1,y_size,fp_in)<= 0||		// Y
-			fread(pFrame->data[1],1,y_size/4,fp_in)<= 0||	// U
-			fread(pFrame->data[2],1,y_size/4,fp_in)<= 0){	// V
-			//return -1;
-         exit_flag = RETURN;
-		} else if(feof(fp_in)){
-			//break;
-         exit_flag = BREAK;
-		}
-      omp_unset_lock(&read_lock);
-        
-        pFrame->pts = i;    // set the timestamp for the frame
-        /* encode the image */
-        // encode pFrame and write the output to pkt
-        /* Accoring to avcodec, "The output packet does not necessarily need to contain data for 
-        * the most recent frame, as encoders can delay and reorder input frames internally as needed.
-        * So I think that as long as we set pframe->pts correctly above, we should be good to go for this
-        * sources: 
-        *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavcodec/avcodec.h
-        *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavutil/frame.h
+    for (i = 0; i < framenum; i++) {
+        /* 
+        * OMP requires that for loops have the conditional format of "variable relational_operator variable",
+        *  so we can't check this flag in the condition. Instead, I just check it here.
         */
         if (exit_flag == NONE) {
-           ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
-        }
-        if (exit_flag == NONE && ret < 0) {
-            printf("Error encoding frame\n");
-            //return -1;
-            exit_flag = BREAK;
-        }
-        if (exit_flag == NONE && got_output) {
-            // Question: why framecnt and not just i?
-            //printf("Succeed to encode frame: %5d\tsize:%5d\n",framecnt,pkt.size);
-			framecnt++;
-            printf("Succeed to encode frame: %5d\tsize:%5d\n", i, pkt.size);
-            fwrite(pkt.data, 1, pkt.size, fp_out);
-            av_free_packet(&pkt);
+            if (init_flag == INIT) {
+                pFrame = av_frame_alloc();
+                if (!pFrame) {
+                    printf("Could not allocate video frame\n");
+                    //return -1;
+                    exit_flag = RETURN;
+                }
+                pFrame->format = pCodecCtx->pix_fmt;
+                pFrame->width = pCodecCtx->width;
+                pFrame->height = pCodecCtx->height;
+
+                ret = av_image_alloc(pFrame->data, pFrame->linesize, pCodecCtx->width, pCodecCtx->height,
+                    pCodecCtx->pix_fmt, 16);
+                if (ret < 0) {
+                    printf("Could not allocate raw picture buffer\n");
+                    //return -1;
+                    exit_flag = RETURN;
+                }
+            }
+            av_init_packet(&pkt);
+            pkt.data = NULL;    // packet data will be allocated by the encoder
+            pkt.size = 0;
+
+            //Read raw YUV data from fp_in into pFrame->data
+            omp_set_lock(&read_lock);
+            if (fread(pFrame->data[0], 1, y_size, fp_in) <= 0 ||		// Y
+                fread(pFrame->data[1], 1, y_size / 4, fp_in) <= 0 ||	// U
+                fread(pFrame->data[2], 1, y_size / 4, fp_in) <= 0) {	// V
+                //return -1;
+                exit_flag = RETURN;
+            }
+            else if (feof(fp_in)) {
+                //break;
+                exit_flag = BREAK;
+            }
+            omp_unset_lock(&read_lock);
+
+            pFrame->pts = i;    // set the timestamp for the frame
+            /* encode the image */
+            // encode pFrame and write the output to pkt
+            /* Accoring to avcodec, "The output packet does not necessarily need to contain data for
+            * the most recent frame, as encoders can delay and reorder input frames internally as needed.
+            * So I think that as long as we set pframe->pts correctly above, we should be good to go for this
+            * sources:
+            *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavcodec/avcodec.h
+            *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavutil/frame.h
+            */
+            if (exit_flag == NONE) {
+                ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
+            }
+            if (exit_flag == NONE && ret < 0) {
+                printf("Error encoding frame\n");
+                //return -1;
+                exit_flag = BREAK;
+            }
+            if (exit_flag == NONE && got_output) {
+                // Question: why framecnt and not just i?
+                //printf("Succeed to encode frame: %5d\tsize:%5d\n",framecnt,pkt.size);
+                framecnt++;
+                printf("Succeed to encode frame: %5d\tsize:%5d\n", i, pkt.size);
+                fwrite(pkt.data, 1, pkt.size, fp_out);
+                av_free_packet(&pkt);
+            }
         }
     }
 
     //Flush Encoder
-    for (got_output = 1; got_output; i++) {
+    for (int got_output = 1; got_output; i++) {
+        //TODO: Getting fault thrown on pkt[buf] (pkt's buf variable).
         ret = avcodec_encode_video2(pCodecCtx, &pkt, NULL, &got_output);
         if (ret < 0) {
             printf("Error encoding frame\n");
