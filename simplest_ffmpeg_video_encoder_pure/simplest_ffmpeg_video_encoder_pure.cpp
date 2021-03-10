@@ -22,6 +22,7 @@
 
 #include <stdio.h>
 #include <omp.h>
+#include <vector>
 
 #define __STDC_CONSTANT_MACROS
 
@@ -121,10 +122,7 @@ int main(int argc, char* argv[])
         return -1;
     }
     
-    ////////////////////////////////////
-    //This init won't be used 
-    //init will be taken care of on each thread later
-    /*pFrame = av_frame_alloc();
+    pFrame = av_frame_alloc();
     if (!pFrame) {
         printf("Could not allocate video frame\n");
         return -1;
@@ -138,8 +136,7 @@ int main(int argc, char* argv[])
     if (ret < 0) {
         printf("Could not allocate raw picture buffer\n");
         return -1;
-    }*/
-   //////////////////////////////////
+    }
 
 	//Input raw data
 	fp_in = fopen(filename_in, "rb");
@@ -160,34 +157,85 @@ int main(int argc, char* argv[])
    enum ExitFlag {RETURN, BREAK, NONE};
    enum InitFlag {INIT, INIT_DONE};
    ExitFlag exit_flag = NONE;
-   InitFlag init_flag = INIT;
+
+
+
+   // Reading Threads
+   printf("Starting Reading\nframenum: %d\n", framenum);
+   std::vector<AVFrame> toEncode;
+   for (i = 0; i < framenum; i++) {
+       if (exit_flag == NONE) {
+           //Read raw YUV data from fp_in into pFrame->data
+           if (fread(pFrame->data[0], 1, y_size, fp_in) <= 0 ||		// Y
+               fread(pFrame->data[1], 1, y_size / 4, fp_in) <= 0 ||	// U
+               fread(pFrame->data[2], 1, y_size / 4, fp_in) <= 0) {	// V
+               //return -1;
+               exit_flag = RETURN;
+           }
+           else if (feof(fp_in)) {
+               //break;
+               exit_flag = BREAK;
+           }
+
+           if (exit_flag == NONE) {
+               pFrame->pts = i;
+               toEncode.push_back(*pFrame);
+           }
+       }
+   }
+   if (exit_flag == RETURN) { return -1; }
+
+   // Encoding Threads
+   printf("Starting Encoding\ntoEncode: %d\n", toEncode.size());
+
+   av_init_packet(&pkt);
+   pkt.data = NULL;    // packet data will be allocated by the encoder
+   pkt.size = 0;
+
+   std::vector<AVPacket> toWrite;
+   for (i = 0; i < toEncode.size(); i++) {
+       if (exit_flag == NONE) {
+           pFrame = &toEncode[i];
+           ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
+
+           if (ret < 0) {
+               printf("Error encoding frame\n");
+               //return -1;
+               exit_flag = BREAK;
+           }
+           if (got_output) {
+               toWrite.push_back(pkt);
+           }
+       }
+   }
+   if (exit_flag == RETURN) { return -1; }
+
+   // Writing Threads
+   printf("Starting Writing\n");
+
+   for (i = 0; i < toWrite.size(); i++) {
+       if (exit_flag == NONE) {
+           pkt = toWrite[i];
+           printf("Succeed to encode frame: %5d\tsize:%5d\n", i, pkt.size);
+           fwrite(pkt.data, 1, pkt.size, fp_out);
+       }
+   }
+   if (exit_flag == RETURN) { return -1; }
+
+
+   av_free_packet(&pkt);
+
+
+   /*
     //Encode
     #pragma omp parallel for private(ret, got_output, pkt, pFrame) firstprivate(init_flag)
     for (i = 0; i < framenum; i++) {
         /* 
         * OMP requires that for loops have the conditional format of "variable relational_operator variable",
         *  so we can't check this flag in the condition. Instead, I just check it here.
-        */
+        
         if (exit_flag == NONE) {
-            if (init_flag == INIT) {
-                pFrame = av_frame_alloc();
-                if (!pFrame) {
-                    printf("Could not allocate video frame\n");
-                    //return -1;
-                    exit_flag = RETURN;
-                }
-                pFrame->format = pCodecCtx->pix_fmt;
-                pFrame->width = pCodecCtx->width;
-                pFrame->height = pCodecCtx->height;
-
-                ret = av_image_alloc(pFrame->data, pFrame->linesize, pCodecCtx->width, pCodecCtx->height,
-                    pCodecCtx->pix_fmt, 16);
-                if (ret < 0) {
-                    printf("Could not allocate raw picture buffer\n");
-                    //return -1;
-                    exit_flag = RETURN;
-                }
-            }
+            
             av_init_packet(&pkt);
             pkt.data = NULL;    // packet data will be allocated by the encoder
             pkt.size = 0;
@@ -215,7 +263,7 @@ int main(int argc, char* argv[])
             * sources:
             *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavcodec/avcodec.h
             *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavutil/frame.h
-            */
+            
             if (exit_flag == NONE) {
                 ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
             }
@@ -233,7 +281,7 @@ int main(int argc, char* argv[])
                 av_free_packet(&pkt);
             }
         }
-    }
+    }*/
 
     //Flush Encoder
     for (int got_output = 1; got_output; i++) {
