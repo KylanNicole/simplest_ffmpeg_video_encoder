@@ -188,12 +188,13 @@ int main(int argc, char* argv[])
    // Encoding Threads
    printf("Starting Encoding\ntoEncode: %d\n", toEncode.size());
 
-   av_init_packet(&pkt);
-   pkt.data = NULL;    // packet data will be allocated by the encoder
-   pkt.size = 0;
+
 
    std::vector<AVPacket> toWrite;
    for (i = 0; i < toEncode.size(); i++) {
+       av_init_packet(&pkt);
+       pkt.data = NULL;    // packet data will be allocated by the encoder
+       pkt.size = 0;
        if (exit_flag == NONE) {
            pFrame = &toEncode[i];
            ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
