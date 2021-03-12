@@ -24,6 +24,10 @@
 #include <omp.h>
 #include <vector>
 
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+
 #define __STDC_CONSTANT_MACROS
 
 #ifdef _WIN32
@@ -52,6 +56,34 @@ extern "C"
 #define TEST_H264  1
 #define TEST_HEVC  0
 
+//TODO add source for this code...
+template <typename T>
+class queue
+{
+private:
+    std::mutex              d_mutex;
+    std::condition_variable d_condition;
+    std::deque<T>           d_queue;
+public:
+    //void push(T const& value) {
+    void push(T value) {
+        {
+            std::unique_lock<std::mutex> lock(this->d_mutex);
+            d_queue.push_front(value);
+        }
+        this->d_condition.notify_one();
+    }
+    T pop() {
+        std::unique_lock<std::mutex> lock(this->d_mutex);
+        this->d_condition.wait(lock, [=]{ return !this->d_queue.empty(); });
+        T rc(std::move(this->d_queue.back()));
+        this->d_queue.pop_back();
+        return rc;
+    }
+    bool empty(){
+	    return this->d_queue.empty();
+    }
+};
 
 void thread_write(omp_lock_t* write_lock, const void *data, size_t size, size_t nitems, FILE *fp_out)
 {
@@ -156,75 +188,123 @@ int main(int argc, char* argv[])
    //enums for holding status information
    enum ExitFlag {RETURN, BREAK, NONE};
    enum InitFlag {INIT, INIT_DONE};
+   enum ReadFlag {STILL_READING, DONE_READING};
+   enum EncodeFlag {STILL_ENCODING, DONE_ENCODING};
    ExitFlag exit_flag = NONE;
+   ReadFlag read_flag = STILL_READING;
+   EncodeFlag encode_flag = STILL_ENCODING;
 
+   queue<AVFrame*> encodeQ;
+   queue<AVPacket*> writeQ;
 
+#pragma omp parallel sections
+   {
+     #pragma omp section
+     {
+	   // Reading Threads
+	   printf("Starting Reading\nframenum: %d\n", framenum);
+	   //std::vector<AVFrame> toEncode;
+	   AVFrame *tempFrame;
+	   for (i = 0; i < framenum; i++) {
+	       //allocate new frame to read input to
+	       if(exit_flag == NONE){
+		   tempFrame = av_frame_alloc();
+		   if (!tempFrame) {
+		       printf("Could not allocate video frame\n");
+		       //return -1;
+		       exit_flag = RETURN;
+		   }
+	       }
+	       if(exit_flag == NONE){
+		   tempFrame->format = pCodecCtx->pix_fmt;
+		   tempFrame->width  = pCodecCtx->width;
+		   tempFrame->height = pCodecCtx->height;
 
-   // Reading Threads
-   printf("Starting Reading\nframenum: %d\n", framenum);
-   std::vector<AVFrame> toEncode;
-   for (i = 0; i < framenum; i++) {
-       if (exit_flag == NONE) {
-           //Read raw YUV data from fp_in into pFrame->data
-           if (fread(pFrame->data[0], 1, y_size, fp_in) <= 0 ||		// Y
-               fread(pFrame->data[1], 1, y_size / 4, fp_in) <= 0 ||	// U
-               fread(pFrame->data[2], 1, y_size / 4, fp_in) <= 0) {	// V
-               //return -1;
-               exit_flag = RETURN;
-           }
-           else if (feof(fp_in)) {
-               //break;
-               exit_flag = BREAK;
-           }
+		   ret = av_image_alloc(tempFrame->data, tempFrame->linesize, pCodecCtx->width, pCodecCtx->height, pCodecCtx->pix_fmt, 16);
+		   if (ret < 0) {
+		       printf("Could not allocate raw picture buffer\n");
+		       //return -1;
+		       exit_flag = RETURN;
+		   }
+	       }
+	       if (exit_flag == NONE) {
+		   //Read raw YUV data from fp_in into pFrame->data
+		   if (fread(tempFrame->data[0], 1, y_size, fp_in) <= 0 ||      // Y
+		       fread(tempFrame->data[1], 1, y_size / 4, fp_in) <= 0 ||	// U
+		       fread(tempFrame->data[2], 1, y_size / 4, fp_in) <= 0) {	// V
+		       //return -1;
+		       exit_flag = RETURN;
+		   }
+		   else if (feof(fp_in)) {
+		       //break;
+		       exit_flag = BREAK;
+		   }
 
-           if (exit_flag == NONE) {
-               pFrame->pts = i;
-               toEncode.push_back(*pFrame);
-           }
-       }
+		   if (exit_flag == NONE) {
+		       tempFrame->pts = i;
+		       //toEncode.push_back(*pFrame);
+		       encodeQ.push(tempFrame);
+		   }
+	       }
+	   }
+	   read_flag = DONE_READING; // finished with reading input
+	   //if (exit_flag == RETURN) { return -1; }
+     }   
+     #pragma omp section
+     {
+	   // Encoding Threads
+	   //printf("Starting Encoding\ntoEncode: %d\n", toEncode.size());
+
+	   //std::vector<AVPacket> toWrite;
+	   AVFrame *tempEncodeFrame;
+	   AVPacket *tempPkt;
+	   //for (i = 0; i < toEncode.size(); i++) {
+	   while(read_flag != DONE_READING || !encodeQ.empty()){
+	       tempPkt = new AVPacket;
+	       av_init_packet(tempPkt);
+	       tempPkt->data = NULL;    // packet data will be allocated by the encoder
+	       tempPkt->size = 0;
+	       if (exit_flag == NONE) {
+		   //pFrame = &toEncode[i];
+		   tempEncodeFrame = encodeQ.pop();
+		   ret = avcodec_encode_video2(pCodecCtx, tempPkt, tempEncodeFrame, &got_output);
+
+		   if (ret < 0) {
+		       printf("Error encoding frame\n");
+		       //return -1;
+		       exit_flag = BREAK;
+		   }
+		   if (got_output) {
+		       //toWrite.push_back(pkt);
+		       writeQ.push(tempPkt);
+		   }
+	       }
+	   }
+	   encode_flag = DONE_ENCODING; // finished encoding process
+	   //if (exit_flag == RETURN) { return -1; }
+     }
+     #pragma omp section
+     {
+	   // Writing Threads
+	   printf("Starting Writing\n");
+
+	   //for (i = 0; i < toWrite.size(); i++) {
+	   AVPacket *tempWritePkt;
+	   i = 0;
+	   while (encode_flag != DONE_ENCODING || !writeQ.empty()) {
+	       if (exit_flag == NONE) {
+		   //pkt = toWrite[i];
+		   tempWritePkt = writeQ.pop();
+		   printf("Succeed to encode frame: %5d\tsize:%5d\n", i++, tempWritePkt->size);
+		   fwrite(tempWritePkt->data, 1, tempWritePkt->size, fp_out);
+	       }
+	   }
+	   //if (exit_flag == RETURN) { return -1; }
+     }
+
    }
    if (exit_flag == RETURN) { return -1; }
-
-   // Encoding Threads
-   printf("Starting Encoding\ntoEncode: %d\n", toEncode.size());
-
-
-
-   std::vector<AVPacket> toWrite;
-   for (i = 0; i < toEncode.size(); i++) {
-       av_init_packet(&pkt);
-       pkt.data = NULL;    // packet data will be allocated by the encoder
-       pkt.size = 0;
-       if (exit_flag == NONE) {
-           pFrame = &toEncode[i];
-           ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
-
-           if (ret < 0) {
-               printf("Error encoding frame\n");
-               //return -1;
-               exit_flag = BREAK;
-           }
-           if (got_output) {
-               toWrite.push_back(pkt);
-           }
-       }
-   }
-   if (exit_flag == RETURN) { return -1; }
-
-   // Writing Threads
-   printf("Starting Writing\n");
-
-   for (i = 0; i < toWrite.size(); i++) {
-       if (exit_flag == NONE) {
-           pkt = toWrite[i];
-           printf("Succeed to encode frame: %5d\tsize:%5d\n", i, pkt.size);
-           fwrite(pkt.data, 1, pkt.size, fp_out);
-       }
-   }
-   if (exit_flag == RETURN) { return -1; }
-
-
-   av_free_packet(&pkt);
+   //av_free_packet(&pkt);
 
 
    /*
@@ -284,6 +364,9 @@ int main(int argc, char* argv[])
         }
     }*/
 
+    av_init_packet(&pkt);
+    pkt.data = NULL;    
+    pkt.size = 0;
     //Flush Encoder
     for (int got_output = 1; got_output; i++) {
         //TODO: Getting fault thrown on pkt[buf] (pkt's buf variable).
@@ -293,7 +376,7 @@ int main(int argc, char* argv[])
             return -1;
         }
         if (got_output) {
-            printf("Flush Encoder: Succeed to encode 1 frame!\tsize:%5d\n",pkt.size);
+            printf("Flush Encoder: Succeed to encode 1 frame!\tsize:%5d\n", pkt.size);
             fwrite(pkt.data, 1, pkt.size, fp_out);
             av_free_packet(&pkt);
         }
@@ -303,7 +386,7 @@ int main(int argc, char* argv[])
     avcodec_close(pCodecCtx);
     av_free(pCodecCtx);
     av_freep(&pFrame->data[0]);
-    av_frame_free(&pFrame);
+    //av_frame_free(&pFrame);
 
 	return 0;
 }
