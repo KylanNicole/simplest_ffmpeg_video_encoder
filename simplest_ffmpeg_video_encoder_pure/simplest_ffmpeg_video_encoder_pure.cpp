@@ -1,17 +1,17 @@
-/**
- * ×î¼òµ¥µÄ»ùÓÚFFmpegµÄÊÓÆµ±àÂëÆ÷£¨´¿¾»°æ£©
+ï»¿/**
+ * ï¿½ï¿½òµ¥µÄ»ï¿½ï¿½ï¿½FFmpegï¿½ï¿½ï¿½ï¿½Æµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½æ£©
  * Simplest FFmpeg Video Encoder Pure
  * 
- * À×Ïöæè Lei Xiaohua
+ * ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Lei Xiaohua
  * leixiaohua1020@126.com
- * ÖÐ¹ú´«Ã½´óÑ§/Êý×ÖµçÊÓ¼¼Êõ
+ * ï¿½Ð¹ï¿½ï¿½ï¿½Ã½ï¿½ï¿½Ñ§/ï¿½ï¿½ï¿½Öµï¿½ï¿½Ó¼ï¿½ï¿½ï¿½
  * Communication University of China / Digital TV Technology
  * http://blog.csdn.net/leixiaohua1020
  * 
- * ±¾³ÌÐòÊµÏÖÁËYUVÏñËØÊý¾Ý±àÂëÎªÊÓÆµÂëÁ÷£¨H264£¬MPEG2£¬VP8µÈµÈ£©¡£
- * Ëü½ö½öÊ¹ÓÃÁËlibavcodec£¨¶øÃ»ÓÐÊ¹ÓÃlibavformat£©¡£
- * ÊÇ×î¼òµ¥µÄFFmpegÊÓÆµ±àÂë·½ÃæµÄ½Ì³Ì¡£
- * Í¨¹ýÑ§Ï°±¾Àý×Ó¿ÉÒÔÁË½âFFmpegµÄ±àÂëÁ÷³Ì¡£
+ * ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Êµï¿½ï¿½ï¿½ï¿½YUVï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý±ï¿½ï¿½ï¿½Îªï¿½ï¿½Æµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½H264ï¿½ï¿½MPEG2ï¿½ï¿½VP8ï¿½ÈµÈ£ï¿½ï¿½ï¿½
+ * ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½ï¿½ï¿½ï¿½libavcodecï¿½ï¿½ï¿½ï¿½Ã»ï¿½ï¿½Ê¹ï¿½ï¿½libavformatï¿½ï¿½ï¿½ï¿½
+ * ï¿½ï¿½ï¿½ï¿½òµ¥µï¿½FFmpegï¿½ï¿½Æµï¿½ï¿½ï¿½ë·½ï¿½ï¿½Ä½Ì³Ì¡ï¿½
+ * Í¨ï¿½ï¿½Ñ§Ï°ï¿½ï¿½ï¿½ï¿½ï¿½Ó¿ï¿½ï¿½ï¿½ï¿½Ë½ï¿½FFmpegï¿½Ä±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ì¡ï¿½
  * This software encode YUV420P data to video bitstream
  * (Such as H.264, H.265, VP8, MPEG2 etc).
  * It only uses libavcodec to encode video (without libavformat)
@@ -59,6 +59,8 @@ extern "C"
 #define TEST_H264  1
 #define TEST_HEVC  0
 
+//Source: (Slightly modified)
+//https://stackoverflow.com/questions/12805041/c-equivalent-to-javas-blockingqueue
 template <typename T>
 class queue
 {
@@ -86,13 +88,6 @@ public:
     }
 };
 
-void thread_write(omp_lock_t* write_lock, const void *data, size_t size, size_t nitems, FILE *fp_out)
-{
-   omp_set_lock(write_lock);
-   fwrite(data, nitems, size, fp_out);
-   omp_unset_lock(write_lock);
-}
-
 
 int main(int argc, char* argv[])
 {
@@ -107,17 +102,14 @@ int main(int argc, char* argv[])
 	int y_size;
 	int framecnt=0;
 
-   //OpenMP I/O locks
-   omp_lock_t read_lock;
-   omp_lock_t write_lock;
-   omp_init_lock(&read_lock);
-   omp_init_lock(&write_lock);
 
-   // Set up input files
-   //char filename_in[]="../ds_480x272.yuv";
-   //char filename_in[] = "../output_640x360p.yuv";
-   //char filename_in[] = "../output_960x540p.yuv";
-   char filename_in[] = "../output_1280x720p.yuv";
+	/*
+	 * Files and there WxH used for testing
+	 */
+	//char filename_in[]="../ds_480x272.yuv";
+	//char filename_in[]="../640x360.yuv";
+	//char filename_in[]="../960x540.yuv";
+	char filename_in[]="../1280x720.yuv";
 
 // Use set codec to generate output codec
 #if TEST_HEVC
@@ -128,17 +120,32 @@ int main(int argc, char* argv[])
 	//char filename_out[] = "output_1280x720p.hevc";
 #else
 	AVCodecID codec_id=AV_CODEC_ID_H264;
-	char filename_out[]="ds.h264";
-	//char filename_out[] = "output_640x360p.h264";
-	//char filename_out[] = "output_960x540p.h264";
-	//char filename_out[] = "output_1280x720p.h264";
+
+	/*
+	 * Output file names
+	 */
+	//char filename_out[]="ds.h264";
+	//char filename_out[]="640x360.h264";
+	//char filename_out[]="960x540.h264";
+	char filename_out[]="1280x720.h264";
 #endif
 
-	// Set up width and height and number of frames in the input
-	int in_w=480, in_h=272;	
-	int framenum=100;	
+	/*
+	 * Parameters used for each file to be encoded
+	 */
 
-	// Set up avcodec and the context with the correct output codec
+	//int in_w=480,in_h=272;	
+	//int framenum=100;	
+	
+	//int in_w=640,in_h=360;	
+	//int framenum=400;	
+
+	//int in_w=960,in_h=540;	
+	//int framenum=400;	
+
+	int in_w=1280,in_h=720;	
+	int framenum=677;	
+
 	avcodec_register_all();
 
     pCodec = avcodec_find_encoder(codec_id);
@@ -200,25 +207,56 @@ int main(int argc, char* argv[])
 
 	y_size = pCodecCtx->width * pCodecCtx->height;
    
-   //enums for holding status information
+   /*
+    * Enums for holding status information
+    */
    enum ExitFlag {RETURN, BREAK, NONE};
-   enum InitFlag {INIT, INIT_DONE};
    enum ReadFlag {STILL_READING, DONE_READING};
    enum EncodeFlag {STILL_ENCODING, DONE_ENCODING};
    ExitFlag exit_flag = NONE;
    ReadFlag read_flag = STILL_READING;
    EncodeFlag encode_flag = STILL_ENCODING;
 
-   // Queues that sit between the threads
+   /*
+    * Queues used for producing and consuming threads
+    */
    queue<AVFrame*> encodeQ;
    queue<AVPacket*> writeQ;
 
-   // Create the three threads
+
+/*
+ * Our parallelized section
+ *
+ * 	Each section within the pragma omp parallel sections
+ * 	is given its own thread to perform the enclosed code.
+ * 	Blocking queues are used to facilitate a producer
+ * 	consumer style workflow so each thread is waiting to
+ * 	perform their tasks as little as possible
+ *
+ * 	exit_flag: used to emulate breaks and returns since
+ * 		omp does not work with breaks and returns
+ *
+ * 	Reading thread: This thread will read in all available
+ * 		data frames from the input file and push them
+ * 		onto a blocking queue
+ *
+ * 	Encoding thread: This thread will consume from the blocking
+ * 		read queue and encode each frame of data that it gets.
+ * 		Encoded data is then pushed onto the writing queue to
+ * 		be written later
+ *
+ * 	Writing thread: This thread will consume from the writing queue
+ * 		and will write each frame of encoded data to the final
+ * 		output file
+ *
+ *
+ */
 #pragma omp parallel sections
    {
 	 /* READING THREAD */
      #pragma omp section
      {
+	   // Reading Thread
 	   printf("Starting Reading\nframenum: %d\n", framenum);
 	   AVFrame *tempFrame;
 	   for (i = 0; i < framenum; i++) {
@@ -264,6 +302,9 @@ int main(int argc, char* argv[])
 	 /* ENCODING THREAD */
      #pragma omp section
      {
+	   // Encoding Threads
+	   printf("Starting Encoding\n");
+
 	   AVFrame *tempEncodeFrame;
 	   AVPacket *tempPkt;
 	   while(read_flag != DONE_READING || !encodeQ.empty()){
@@ -308,6 +349,7 @@ int main(int argc, char* argv[])
 
    if (exit_flag == RETURN) { return -1; }
 
+    //Init packet for flush encoder to flush data to
     av_init_packet(&pkt);
     pkt.data = NULL;    
     pkt.size = 0;
