@@ -56,7 +56,8 @@ extern "C"
 #define TEST_H264  1
 #define TEST_HEVC  0
 
-//TODO add source for this code...
+//Source: (Slightly modified)
+//https://stackoverflow.com/questions/12805041/c-equivalent-to-javas-blockingqueue
 template <typename T>
 class queue
 {
@@ -85,13 +86,6 @@ public:
     }
 };
 
-void thread_write(omp_lock_t* write_lock, const void *data, size_t size, size_t nitems, FILE *fp_out)
-{
-   omp_set_lock(write_lock);
-   fwrite(data, nitems, size, fp_out);
-   omp_unset_lock(write_lock);
-}
-
 
 int main(int argc, char* argv[])
 {
@@ -105,25 +99,45 @@ int main(int argc, char* argv[])
 	int y_size;
 	int framecnt=0;
 
-   //OpenMP I/O locks
-   omp_lock_t read_lock;
-   omp_lock_t write_lock;
-   omp_init_lock(&read_lock);
-   omp_init_lock(&write_lock);
 
-	char filename_in[]="../ds_480x272.yuv";
+	/*
+	 * Files and there WxH used for testing
+	 */
+	//char filename_in[]="../ds_480x272.yuv";
+	//char filename_in[]="../640x360.yuv";
+	//char filename_in[]="../960x540.yuv";
+	char filename_in[]="../1280x720.yuv";
 
 #if TEST_HEVC
 	AVCodecID codec_id=AV_CODEC_ID_HEVC;
 	char filename_out[]="ds.hevc";
 #else
 	AVCodecID codec_id=AV_CODEC_ID_H264;
-	char filename_out[]="ds.h264";
+
+	/*
+	 * Output file names
+	 */
+	//char filename_out[]="ds.h264";
+	//char filename_out[]="640x360.h264";
+	//char filename_out[]="960x540.h264";
+	char filename_out[]="1280x720.h264";
 #endif
 
+	/*
+	 * Parameters used for each file to be encoded
+	 */
 
-	int in_w=480,in_h=272;	
-	int framenum=100;	
+	//int in_w=480,in_h=272;	
+	//int framenum=100;	
+	
+	//int in_w=640,in_h=360;	
+	//int framenum=400;	
+
+	//int in_w=960,in_h=540;	
+	//int framenum=400;	
+
+	int in_w=1280,in_h=720;	
+	int framenum=677;	
 
 	avcodec_register_all();
 
@@ -185,25 +199,56 @@ int main(int argc, char* argv[])
 
 	y_size = pCodecCtx->width * pCodecCtx->height;
    
-   //enums for holding status information
+   /*
+    * Enums for holding status information
+    */
    enum ExitFlag {RETURN, BREAK, NONE};
-   enum InitFlag {INIT, INIT_DONE};
    enum ReadFlag {STILL_READING, DONE_READING};
    enum EncodeFlag {STILL_ENCODING, DONE_ENCODING};
    ExitFlag exit_flag = NONE;
    ReadFlag read_flag = STILL_READING;
    EncodeFlag encode_flag = STILL_ENCODING;
 
+   /*
+    * Queues used for producing and consuming threads
+    */
    queue<AVFrame*> encodeQ;
    queue<AVPacket*> writeQ;
 
+
+/*
+ * Our parallelized section
+ *
+ * 	Each section within the pragma omp parallel sections
+ * 	is given its own thread to perform the enclosed code.
+ * 	Blocking queues are used to facilitate a producer
+ * 	consumer style workflow so each thread is waiting to
+ * 	perform their tasks as little as possible
+ *
+ * 	exit_flag: used to emulate breaks and returns since
+ * 		omp does not work with breaks and returns
+ *
+ * 	Reading thread: This thread will read in all available
+ * 		data frames from the input file and push them
+ * 		onto a blocking queue
+ *
+ * 	Encoding thread: This thread will consume from the blocking
+ * 		read queue and encode each frame of data that it gets.
+ * 		Encoded data is then pushed onto the writing queue to
+ * 		be written later
+ *
+ * 	Writing thread: This thread will consume from the writing queue
+ * 		and will write each frame of encoded data to the final
+ * 		output file
+ *
+ *
+ */
 #pragma omp parallel sections
    {
      #pragma omp section
      {
-	   // Reading Threads
+	   // Reading Thread
 	   printf("Starting Reading\nframenum: %d\n", framenum);
-	   //std::vector<AVFrame> toEncode;
 	   AVFrame *tempFrame;
 	   for (i = 0; i < framenum; i++) {
 	       //allocate new frame to read input to
@@ -211,7 +256,6 @@ int main(int argc, char* argv[])
 		   tempFrame = av_frame_alloc();
 		   if (!tempFrame) {
 		       printf("Could not allocate video frame\n");
-		       //return -1;
 		       exit_flag = RETURN;
 		   }
 	       }
@@ -223,7 +267,6 @@ int main(int argc, char* argv[])
 		   ret = av_image_alloc(tempFrame->data, tempFrame->linesize, pCodecCtx->width, pCodecCtx->height, pCodecCtx->pix_fmt, 16);
 		   if (ret < 0) {
 		       printf("Could not allocate raw picture buffer\n");
-		       //return -1;
 		       exit_flag = RETURN;
 		   }
 	       }
@@ -232,63 +275,52 @@ int main(int argc, char* argv[])
 		   if (fread(tempFrame->data[0], 1, y_size, fp_in) <= 0 ||      // Y
 		       fread(tempFrame->data[1], 1, y_size / 4, fp_in) <= 0 ||	// U
 		       fread(tempFrame->data[2], 1, y_size / 4, fp_in) <= 0) {	// V
-		       //return -1;
 		       exit_flag = RETURN;
 		   }
 		   else if (feof(fp_in)) {
-		       //break;
 		       exit_flag = BREAK;
 		   }
 
 		   if (exit_flag == NONE) {
 		       tempFrame->pts = i;
-		       //toEncode.push_back(*pFrame);
 		       encodeQ.push(tempFrame);
 		   }
 	       }
 	   }
 	   read_flag = DONE_READING; // finished with reading input
-	   //if (exit_flag == RETURN) { return -1; }
      }   
      #pragma omp section
      {
 	   // Encoding Threads
-	   //printf("Starting Encoding\ntoEncode: %d\n", toEncode.size());
+	   printf("Starting Encoding\n");
 
-	   //std::vector<AVPacket> toWrite;
 	   AVFrame *tempEncodeFrame;
 	   AVPacket *tempPkt;
-	   //for (i = 0; i < toEncode.size(); i++) {
 	   while(read_flag != DONE_READING || !encodeQ.empty()){
 	       tempPkt = new AVPacket;
 	       av_init_packet(tempPkt);
 	       tempPkt->data = NULL;    // packet data will be allocated by the encoder
 	       tempPkt->size = 0;
 	       if (exit_flag == NONE) {
-		   //pFrame = &toEncode[i];
 		   tempEncodeFrame = encodeQ.pop();
 		   ret = avcodec_encode_video2(pCodecCtx, tempPkt, tempEncodeFrame, &got_output);
 
 		   if (ret < 0) {
 		       printf("Error encoding frame\n");
-		       //return -1;
 		       exit_flag = BREAK;
 		   }
 		   if (got_output) {
-		       //toWrite.push_back(pkt);
 		       writeQ.push(tempPkt);
 		   }
 	       }
 	   }
 	   encode_flag = DONE_ENCODING; // finished encoding process
-	   //if (exit_flag == RETURN) { return -1; }
      }
      #pragma omp section
      {
 	   // Writing Threads
 	   printf("Starting Writing\n");
 
-	   //for (i = 0; i < toWrite.size(); i++) {
 	   AVPacket *tempWritePkt;
 	   i = 0;
 	   while (encode_flag != DONE_ENCODING || !writeQ.empty()) {
@@ -299,71 +331,12 @@ int main(int argc, char* argv[])
 		   fwrite(tempWritePkt->data, 1, tempWritePkt->size, fp_out);
 	       }
 	   }
-	   //if (exit_flag == RETURN) { return -1; }
      }
 
    }
    if (exit_flag == RETURN) { return -1; }
-   //av_free_packet(&pkt);
 
-
-   /*
-    //Encode
-    #pragma omp parallel for private(ret, got_output, pkt, pFrame) firstprivate(init_flag)
-    for (i = 0; i < framenum; i++) {
-        /* 
-        * OMP requires that for loops have the conditional format of "variable relational_operator variable",
-        *  so we can't check this flag in the condition. Instead, I just check it here.
-        
-        if (exit_flag == NONE) {
-            
-            av_init_packet(&pkt);
-            pkt.data = NULL;    // packet data will be allocated by the encoder
-            pkt.size = 0;
-
-            //Read raw YUV data from fp_in into pFrame->data
-            omp_set_lock(&read_lock);
-            if (fread(pFrame->data[0], 1, y_size, fp_in) <= 0 ||		// Y
-                fread(pFrame->data[1], 1, y_size / 4, fp_in) <= 0 ||	// U
-                fread(pFrame->data[2], 1, y_size / 4, fp_in) <= 0) {	// V
-                //return -1;
-                exit_flag = RETURN;
-            }
-            else if (feof(fp_in)) {
-                //break;
-                exit_flag = BREAK;
-            }
-            omp_unset_lock(&read_lock);
-
-            pFrame->pts = i;    // set the timestamp for the frame
-            /* encode the image */
-            // encode pFrame and write the output to pkt
-            /* Accoring to avcodec, "The output packet does not necessarily need to contain data for
-            * the most recent frame, as encoders can delay and reorder input frames internally as needed.
-            * So I think that as long as we set pframe->pts correctly above, we should be good to go for this
-            * sources:
-            *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavcodec/avcodec.h
-            *   - https://github.com/Nevcairiel/FFmpeg/blob/master/libavutil/frame.h
-            
-            if (exit_flag == NONE) {
-                ret = avcodec_encode_video2(pCodecCtx, &pkt, pFrame, &got_output);
-            }
-            if (exit_flag == NONE && ret < 0) {
-                printf("Error encoding frame\n");
-                //return -1;
-                exit_flag = BREAK;
-            }
-            if (exit_flag == NONE && got_output) {
-                // Question: why framecnt and not just i?
-                //printf("Succeed to encode frame: %5d\tsize:%5d\n",framecnt,pkt.size);
-                framecnt++;
-                printf("Succeed to encode frame: %5d\tsize:%5d\n", i, pkt.size);
-                fwrite(pkt.data, 1, pkt.size, fp_out);
-                av_free_packet(&pkt);
-            }
-        }
-    }*/
-
+    //Init packet for flush encoder to flush data to
     av_init_packet(&pkt);
     pkt.data = NULL;    
     pkt.size = 0;
