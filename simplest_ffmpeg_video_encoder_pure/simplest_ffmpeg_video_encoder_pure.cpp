@@ -91,7 +91,7 @@ public:
 
 int main(int argc, char* argv[])
 {
-	// Initialize cariables
+	// Initialize variables
 	AVCodec *pCodec;
     AVCodecContext *pCodecCtx= NULL;
     int i, ret, got_output;
@@ -114,10 +114,10 @@ int main(int argc, char* argv[])
 // Use set codec to generate output codec
 #if TEST_HEVC
 	AVCodecID codec_id=AV_CODEC_ID_HEVC;
-	char filename_out[]="ds.hevc";
+	//char filename_out[]="ds.hevc";
 	//char filename_out[]="output_640x360p.hevc";
 	//char filename_out[] = "output_960x540p.hevc";
-	//char filename_out[] = "output_1280x720p.hevc";
+	char filename_out[] = "output_1280x720p.hevc";
 #else
 	AVCodecID codec_id=AV_CODEC_ID_H264;
 
@@ -256,8 +256,6 @@ int main(int argc, char* argv[])
 	 /* READING THREAD */
      #pragma omp section
      {
-	   // Reading Thread
-	   printf("Starting Reading\nframenum: %d\n", framenum);
 	   AVFrame *tempFrame;
 	   for (i = 0; i < framenum; i++) {
 	       //allocate new frame into which input will be read
@@ -302,7 +300,6 @@ int main(int argc, char* argv[])
 	 /* ENCODING THREAD */
      #pragma omp section
      {
-	   // Encoding Threads
 	   printf("Starting Encoding\n");
 
 	   AVFrame *tempEncodeFrame;
@@ -331,9 +328,6 @@ int main(int argc, char* argv[])
 	 /* WRITING THREAD */
      #pragma omp section
      {
-	   // Writing Threads
-	   printf("Starting Writing\n");
-
 	   AVPacket *tempWritePkt;
 	   i = 0;
 	   while (encode_flag != DONE_ENCODING || !writeQ.empty()) {
